@@ -42,7 +42,7 @@ jobs:
       - name: Compute image tags
         id: tags
         run: |
-          IMAGE="ghcr.io/${{ steps.owner.outputs.value }}/sub2api"
+          IMAGE="ghcr.io/${{ steps.owner.outputs.value }}/${{ github.event.repository.name }}"
           TAGS="${IMAGE}:sha-${GITHUB_SHA}"
 
           if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
