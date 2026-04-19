@@ -1,0 +1,102 @@
+name: Deploy Hugging Face Space
+
+on:
+  workflow_run:
+    workflows:
+      - GHCR Image
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      image_ref:
+        description: "Image tag to deploy, for example main or sha-<commit>"
+        required: false
+        default: "main"
+        type: string
+      hf_space_repo_id:
+        description: "Hugging Face Space repo id, for example gdtiti/sub2api-v2"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-hf-space
+  cancel-in-progress: true
+
+jobs:
+  sync-space:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    env:
+      DEFAULT_HF_SPACE_REPO_ID: ${{ vars.HF_SPACE_REPO_ID }}
+    steps:
+      - name: Resolve deployment parameters
+        id: params
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            GIT_REF="${{ github.ref_name }}"
+            IMAGE_REF="${{ github.event.inputs.image_ref }}"
+            HF_SPACE_REPO_ID="${{ github.event.inputs.hf_space_repo_id }}"
+          else
+            GIT_REF="${{ github.event.workflow_run.head_sha }}"
+            IMAGE_REF="sha-${{ github.event.workflow_run.head_sha }}"
+            HF_SPACE_REPO_ID="${DEFAULT_HF_SPACE_REPO_ID}"
+          fi
+
+          if [ -z "${HF_SPACE_REPO_ID}" ]; then
+            echo "HF space repo id is empty. Set vars.HF_SPACE_REPO_ID or provide workflow_dispatch input."
+            exit 1
+          fi
+
+          if [ -z "${IMAGE_REF}" ]; then
+            echo "Image ref is empty."
+            exit 1
+          fi
+
+          echo "git_ref=${GIT_REF}" >> "$GITHUB_OUTPUT"
+          echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
+          echo "hf_space_repo_id=${HF_SPACE_REPO_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.params.outputs.git_ref }}
+
+      - name: Set lowercase owner
+        id: owner
+        shell: bash
+        run: echo "value=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Render Space directory
+        shell: bash
+        run: |
+          IMAGE="ghcr.io/${{ steps.owner.outputs.value }}/${{ github.event.repository.name }}:${{ steps.params.outputs.image_ref }}"
+          TARGET_DIR=".hf-space-sync"
+
+          rm -rf "${TARGET_DIR}"
+          mkdir -p "${TARGET_DIR}"
+          cp deploy/hf-space/README.md "${TARGET_DIR}/README.md"
+
+          sed "s|^ARG BASE_IMAGE=.*|ARG BASE_IMAGE=${IMAGE}|" \
+            deploy/hf-space/Dockerfile > "${TARGET_DIR}/Dockerfile"
+
+          cat > "${TARGET_DIR}/DEPLOYED_IMAGE.txt" <<EOF
+          ${IMAGE}
+          EOF
+
+      - name: Sync Space to Hugging Face
+        uses: huggingface/hub-sync@v0.1.0
+        with:
+          github_repo_id: ${{ github.repository }}
+          huggingface_repo_id: ${{ steps.params.outputs.hf_space_repo_id }}
+          hf_token: ${{ secrets.HF_TOKEN }}
+          repo_type: space
+          space_sdk: docker
+          subdirectory: .hf-space-sync
